@@ -279,9 +279,10 @@ static bool check_argv(struct user_arg_ptr argv, int index,
 static void ksu_initialize_selinux_tw_func(struct callback_head *cb)
 {
 	ksu_selinux_hide_handle_second_stage();
-	apply_kernelsu_rules();
-	cache_sid();
-	setup_ksu_cred();
+	if (!apply_kernelsu_rules()) {
+		cache_sid();
+		setup_ksu_cred();
+	}
 	kfree(cb);
 }
 
@@ -342,7 +343,8 @@ int ksu_handle_execveat_ksud(int *fd, struct filename **filename_ptr,
 		    check_argv(*argv, 1, "--second-stage", buf, sizeof(buf))) {
 			/* This applies to versions between Android 6 ~ 7 */
 			pr_info("/init second_stage executed\n");
-			apply_kernelsu_rules();
+			if (apply_kernelsu_rules())
+				return 0;
 			setup_ksu_cred();
 			init_second_stage_executed = true;
 		} else if (count(*argv, MAX_ARG_STRINGS) == 1 &&
@@ -373,7 +375,8 @@ int ksu_handle_execveat_ksud(int *fd, struct filename **filename_ptr,
 					    (!strcmp(env_value, "1") ||
 					     !strcmp(env_value, "true"))) {
 						pr_info("/init second_stage executed\n");
-						apply_kernelsu_rules();
+						if (apply_kernelsu_rules())
+							return 0;
 						setup_ksu_cred();
 						init_second_stage_executed = true;
 					}
@@ -442,7 +445,7 @@ append_ksu_rc:
 		if (append_count > count - ret)
 			append_count = count - ret;
 		// copy_to_user returns the number of not copied
-		if (copy_to_user(buf + ret, KERNEL_SU_RC + ksu_rc_pos, append_count)) {
+		if (ksu_copy_to_user(buf + ret, KERNEL_SU_RC + ksu_rc_pos, append_count)) {
 			pr_info("read_proxy: append error, totally appended %ld\n", ksu_rc_pos);
 			return ret;
 		}
@@ -460,7 +463,7 @@ append_module_rc:
 		append_count = module_rc_len - module_rc_pos;
 		if (append_count > count - ret)
 			append_count = count - ret;
-		if (copy_to_user(buf + ret, module_rc_buf + module_rc_pos, append_count)) {
+		if (ksu_copy_to_user(buf + ret, module_rc_buf + module_rc_pos, append_count)) {
 			pr_info("read_proxy: module append error, totally appended %zd\n", module_rc_pos);
 			return ret;
 		}
@@ -819,7 +822,7 @@ static int sys_fstat_handler_post(struct kretprobe_instance *p,
 		pr_info("adding ksu_rc_len: %ld -> %ld", size, new_size);
 
 		// Attempt to overwrite the file size in userspace safely
-		if (!copy_to_user(st_size_ptr, &new_size, size_bytes)) {
+		if (!ksu_copy_to_user(st_size_ptr, &new_size, size_bytes)) {
 			pr_info("added ksu_rc_len");
 		} else {
 			pr_err("add ksu_rc_len failed: statbuf 0x%lx",
@@ -993,7 +996,7 @@ static noinline void ksu_common_newfstat_ret(unsigned int fd_int, void **statbuf
 	}
 #endif
 
-	if (copy_from_user(&size, st_size_ptr, len)) {
+	if (ksu_copy_from_user(&size, st_size_ptr, len)) {
 		pr_info("%s: read statbuf 0x%lx failed \n", syscall_name, (unsigned long)st_size_ptr);
 		return;
 	}
@@ -1001,7 +1004,7 @@ static noinline void ksu_common_newfstat_ret(unsigned int fd_int, void **statbuf
 	new_size = size + ksu_rc_len + module_rc_len;
 	pr_info("%s: adding ksu_rc_len: %ld -> %ld \n", syscall_name, size, new_size);
 		
-	if (!copy_to_user(st_size_ptr, &new_size, len))
+	if (!ksu_copy_to_user(st_size_ptr, &new_size, len))
 		pr_info("%s: added ksu_rc_len \n", syscall_name);
 	else
 		pr_info("%s: add ksu_rc_len failed: statbuf 0x%lx \n", syscall_name, (unsigned long)st_size_ptr);

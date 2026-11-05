@@ -242,7 +242,7 @@ static __nocfi ssize_t my_selinux_transaction_write(struct file *file, const cha
 	 */
 	if (size != 0 && size <= 128) {
 		char scon[128];
-		if (copy_from_user(scon, buf, size)) {
+		if (ksu_copy_from_user(scon, buf, size)) {
 			scon[0] = '\0';
 			size = 0;
 		} else {
@@ -378,6 +378,7 @@ page_ok:
 
 void __init ksu_selinux_hide_init(void)
 {
+	return; /* vendor */
 	if (ksu_register_feature_handler(&selinux_hide_status_handler))
 		pr_err("ksu_selinux_hide: failed to register feature handler\n");
 

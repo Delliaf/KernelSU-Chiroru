@@ -1,5 +1,6 @@
 #include <linux/export.h>
 #include <linux/fs.h>
+#include <linux/uaccess.h>
 #include <linux/kobject.h>
 #include <linux/module.h>
 #include <linux/rcupdate.h>
@@ -93,6 +94,7 @@ module_param_named(bundled, ksu_bundled, bool, 0);
 
 int __init kernelsu_init(void)
 {
+	int ret;
 #ifdef MODULE
 	ksu_late_loaded = (current->pid != 1);
 #else
@@ -119,6 +121,16 @@ int __init kernelsu_init(void)
         return -ENOSYS;
     }
 
+	/* Fail before installing hooks or granting credentials. */
+	if (ksu_late_loaded) {
+		ret = apply_kernelsu_rules();
+		if (ret) {
+			abort_creds(ksu_cred);
+			ksu_cred = NULL;
+			return ret;
+		}
+	}
+
 	ksu_feature_init();
 
 	ksu_sulog_init();
@@ -136,13 +148,13 @@ int __init kernelsu_init(void)
 	if (ksu_late_loaded) {
 		pr_info("late load mode, skipping kprobe hooks\n");
 
-		apply_kernelsu_rules();
 		cache_sid();
 		setup_ksu_cred();
 
 		// Grant current process (ksud late-load) root
 		// with KSU SELinux domain before enforcing SELinux, so it
 		// can continue to access /data/app etc. after enforcement.
+		ksu_capture_bootstrap_domain();
 		escape_to_root_for_init();
 
 		ksu_allowlist_init();
@@ -230,3 +242,48 @@ MODULE_IMPORT_NS("VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver");
 #elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
 MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
 #endif
+
+extern unsigned long __arch_copy_to_user(void *to, const void *from, unsigned long n);
+extern unsigned long __arch_copy_from_user(void *to, const void *from, unsigned long n);
+
+/*
+ * Vendor 5.4 chiron has CONFIG_ARM64_SW_TTBR0_PAN and a CPU without hardware
+ * PAN/UAO, so EL1 runs with the reserved TTBR0 installed. Every user access
+ * must switch TTBR0 back to the task's page tables first, otherwise the store
+ * faults forever in do_translation_fault.
+ */
+static inline void ksu_uaccess_begin(void)
+{
+#ifdef CONFIG_ARM64_SW_TTBR0_PAN
+	__uaccess_ttbr0_enable();
+#endif
+}
+
+static inline void ksu_uaccess_end(void)
+{
+#ifdef CONFIG_ARM64_SW_TTBR0_PAN
+	__uaccess_ttbr0_disable();
+#endif
+}
+
+unsigned long ksu_copy_to_user(void *to, const void *from, unsigned long n)
+{
+	unsigned long ret;
+
+	ksu_uaccess_begin();
+	ret = __arch_copy_to_user(to, from, n);
+	ksu_uaccess_end();
+
+	return ret;
+}
+
+unsigned long ksu_copy_from_user(void *to, const void *from, unsigned long n)
+{
+	unsigned long ret;
+
+	ksu_uaccess_begin();
+	ret = __arch_copy_from_user(to, from, n);
+	ksu_uaccess_end();
+
+	return ret;
+}

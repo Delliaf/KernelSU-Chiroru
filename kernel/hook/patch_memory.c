@@ -25,6 +25,8 @@
 
 #include "patch_memory.h"
 #include "klog.h" // IWYU pragma: keep
+#include <linux/module.h>
+#include <linux/moduleparam.h>
 #include "linux/cpumask.h"
 #include "linux/gfp.h" // IWYU pragma: keep
 #include "linux/uaccess.h"
@@ -170,6 +172,15 @@ struct patch_text_info {
 // not a big problem because we are in stop_machine.
 // ^1: https://github.com/NothingOSS/android_kernel_device_modules_6.1_nothing_mt6878/blob/957dac185efe46cbf6336b0fff9516d84c8cd78f/drivers/misc/mediatek/mkp/mkp_main.c#L29
 // ^2: https://github.com/torvalds/linux/commit/c0eb315ad9719e41ce44708455cc69df7ac9f3f8
+/* Physical address of _stext, supplied at insmod time.
+ * The vendor kernel does not export init_mm's layout, so walking init_mm.pgd
+ * from a module is unreliable; a linear image mapping is enough for every
+ * address KSU patches (sys_call_table, kprobes text, ...). */
+extern char _stext[];
+unsigned long ksu_phys_base;
+module_param(ksu_phys_base, ulong, 0);
+MODULE_PARM_DESC(ksu_phys_base, "physical address of _stext");
+
 static int ksu_patch_text_nosync(void *dst, void *src, size_t len, int flags)
 {
     pr_debug("patch dst=0x%lx src=0x%lx len=%ld\n", (unsigned long)dst,
@@ -179,7 +190,14 @@ static int ksu_patch_text_nosync(void *dst, void *src, size_t len, int flags)
     int ret;
 
     int phy_err;
-    unsigned long phy = phys_from_virt(p, &phy_err);
+    unsigned long phy;
+
+    if (ksu_phys_base) {
+        phy = p - (unsigned long)_stext + ksu_phys_base;
+        phy_err = 0;
+    } else {
+        phy = phys_from_virt(p, &phy_err);
+    }
     if (phy_err) {
         ret = phy_err;
         pr_err("failed to find phy addr for patch dst addr 0x%lx\n", p);

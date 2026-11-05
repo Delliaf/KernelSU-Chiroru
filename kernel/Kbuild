@@ -31,6 +31,11 @@ kernelsu-objs += runtime/ksud_integration.o
 kernelsu-objs += selinux/selinux.o
 kernelsu-objs += selinux/rules.o
 kernelsu-objs += selinux/sepolicy.o
+kernelsu-objs += selinux/policy_writer.o
+kernelsu-objs += selinux/policy_transaction.o
+
+# Android vendor context hash backport; the shared upstream tree stays intact.
+ccflags-y += -include $(src)/selinux/chiron_context.h
 
 kernelsu-objs += sulog/event.o
 kernelsu-objs += sulog/fd.o
@@ -63,7 +68,7 @@ else
 KSU_KERNEL_DIR := $(src)
 endif
 
-ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include
+ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include -I$(KSU_KERNEL_DIR)/..
 
 obj-$(CONFIG_KSU) += kernelsu.o
 

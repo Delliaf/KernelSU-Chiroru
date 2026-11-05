@@ -250,11 +250,11 @@ static ssize_t ksu_event_queue_read_drop(struct ksu_event_queue *queue, char __u
     queue->dropped_last_seq = 0;
     spin_unlock_irqrestore(&queue->lock, irq_flags);
 
-    if (copy_to_user(buf, &hdr, sizeof(hdr))) {
+    if (ksu_copy_to_user(buf, &hdr, sizeof(hdr))) {
         goto out_restore;
     }
 
-    if (copy_to_user(buf + sizeof(hdr), &info, sizeof(info))) {
+    if (ksu_copy_to_user(buf + sizeof(hdr), &info, sizeof(info))) {
         goto out_restore;
     }
 
@@ -306,11 +306,11 @@ static ssize_t ksu_event_queue_read_node(struct ksu_event_queue *queue, char __u
     }
     spin_unlock_irqrestore(&queue->lock, irq_flags);
 
-    if (copy_to_user(buf, &node->hdr, sizeof(node->hdr))) {
+    if (ksu_copy_to_user(buf, &node->hdr, sizeof(node->hdr))) {
         return -EFAULT;
     }
 
-    if (node->hdr.len && copy_to_user(buf + sizeof(node->hdr), node->payload, node->hdr.len)) {
+    if (node->hdr.len && ksu_copy_to_user(buf + sizeof(node->hdr), node->payload, node->hdr.len)) {
         return -EFAULT;
     }
 

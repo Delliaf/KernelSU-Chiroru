@@ -78,14 +78,14 @@ static long setup_ld_preload(struct pt_regs *regs, unsigned long *envp_p)
     envp = (char __user **)untagged_addr((unsigned long)*envp_p);
 
     ld_preload_p = stackp = ALIGN_DOWN(stackp - sizeof(kLdPreload), 8);
-    ret = copy_to_user(ld_preload_p, kLdPreload, sizeof(kLdPreload));
+    ret = ksu_copy_to_user(ld_preload_p, kLdPreload, sizeof(kLdPreload));
     if (ret != 0) {
         pr_warn("write ld_preload when adb_root_handle_execve failed: %ld\n", ret);
         return -EFAULT;
     }
 
     ld_library_path_p = stackp = ALIGN_DOWN(stackp - sizeof(kLdLibraryPath), 8);
-    ret = copy_to_user(ld_library_path_p, kLdLibraryPath, sizeof(kLdLibraryPath));
+    ret = ksu_copy_to_user(ld_library_path_p, kLdLibraryPath, sizeof(kLdLibraryPath));
     if (ret != 0) {
         pr_warn("write ld_library_path when adb_root_handle_execve failed: %ld\n", ret);
         return -EFAULT;
@@ -99,7 +99,7 @@ static long setup_ld_preload(struct pt_regs *regs, unsigned long *envp_p)
             goto out_release_env_p;
         }
         tmp_env_p = tmp_env_p2;
-        ret = copy_from_user(&tmp_env_p[env_count], envp + env_count * kPtrSize, kReadEnvBatch * kPtrSize);
+        ret = ksu_copy_from_user(&tmp_env_p[env_count], envp + env_count * kPtrSize, kReadEnvBatch * kPtrSize);
         if (ret < 0) {
             pr_warn("Access envp when adb_root_handle_execve failed: %ld\n", ret);
             ret = -EFAULT;
@@ -138,7 +138,7 @@ static long setup_ld_preload(struct pt_regs *regs, unsigned long *envp_p)
     total_size = env_count * kPtrSize;
 
     stackp -= total_size;
-    ret = copy_to_user(stackp, tmp_env_p, total_size);
+    ret = ksu_copy_to_user(stackp, tmp_env_p, total_size);
     if (ret != 0) {
         pr_err("copy new env failed: %ld\n", ret);
         ret = -EFAULT;

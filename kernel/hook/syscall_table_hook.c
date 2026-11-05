@@ -24,6 +24,10 @@
 #include "compat/kernel_compat.h"
 #include "hook/syscall_table_hook.h"
 #include "hook/patch_memory.h"
+#include "hook/setuid_hook.h"
+
+extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,
+				 void __user **arg);
 #include "infra/symbol_resolver.h"
 #include "policy/app_profile.h"
 #include "selinux/selinux.h"
@@ -37,6 +41,10 @@
 #endif
 
 typedef long (*ksu_syscall_fn_t)(const struct pt_regs *regs);
+
+/* Resolved by tools/patch-ko.py: the vendor kernel keeps sys_call_table out of
+ * kallsyms, so it is patched into the module as an absolute symbol. */
+extern ksu_syscall_fn_t ksu_sth_table[] __asm__("sys_call_table");
 
 static ksu_syscall_fn_t *ksu_sth_syscall_table = NULL;
 
@@ -146,6 +154,10 @@ static long ksu_sth_execve(const struct pt_regs *regs)
 		(const char __user **)&PT_REGS_PARM1(regs);
 	long adb_ret = 0;
 
+	/* Never touch init: it must not receive KSU filename rewrites. */
+	if (unlikely(current->pid == 1))
+		return ksu_sth_call_orig(__NR_execve, regs);
+
 	if (current->pid != 1 && is_init(current_cred())) {
 		ksu_sth_init_exec_tracker(*filename_user);
 		adb_ret = ksu_adb_root_handle_execve((struct pt_regs *)regs);
@@ -167,6 +179,9 @@ static long ksu_sth_execveat(const struct pt_regs *regs)
 	long adb_ret = 0;
 
 	// New bionic maps execve to execveat(AT_FDCWD, path, argv, envp, 0)
+	if (unlikely(current->pid == 1))
+		return ksu_sth_call_orig(__NR_execveat, regs);
+
 	if ((int)PT_REGS_PARM1(regs) == AT_FDCWD &&
 	    (int)PT_REGS_SYSCALL_PARM4(regs) == 0) {
 		if (current->pid != 1 && is_init(current_cred())) {
@@ -185,6 +200,40 @@ static long ksu_sth_execveat(const struct pt_regs *regs)
 }
 #endif
 
+#ifdef __NR_setresuid
+static long ksu_sth_setresuid(const struct pt_regs *regs)
+{
+	uid_t ruid = (uid_t)PT_REGS_PARM1(regs);
+	uid_t euid = (uid_t)PT_REGS_PARM2(regs);
+	uid_t suid = (uid_t)PT_REGS_PARM3(regs);
+
+	if (unlikely(current->pid == 1))
+		return ksu_sth_call_orig(__NR_setresuid, regs);
+
+	(void)euid;
+	(void)suid;
+	ksu_handle_setresuid(current_uid().val, ruid);
+
+	return ksu_sth_call_orig(__NR_setresuid, regs);
+}
+#endif
+
+#ifdef __NR_reboot
+static long ksu_sth_reboot(const struct pt_regs *regs)
+{
+	int magic1 = (int)PT_REGS_PARM1(regs);
+	int magic2 = (int)PT_REGS_PARM2(regs);
+	unsigned int cmd = (unsigned int)PT_REGS_PARM3(regs);
+	unsigned long arg4 = (unsigned long)PT_REGS_SYSCALL_PARM4(regs);
+
+	if (unlikely(current->pid == 1))
+		return ksu_sth_call_orig(__NR_reboot, regs);
+
+	ksu_handle_sys_reboot(magic1, magic2, cmd, (void __user **)&arg4);
+	return ksu_sth_call_orig(__NR_reboot, regs);
+}
+#endif
+
 #ifdef __NR_faccessat
 static long ksu_sth_faccessat(const struct pt_regs *regs)
 {
@@ -192,6 +241,9 @@ static long ksu_sth_faccessat(const struct pt_regs *regs)
 	const char __user **filename_user =
 		(const char __user **)&PT_REGS_PARM2(regs);
 	int *mode = (int *)&PT_REGS_PARM3(regs);
+
+	if (unlikely(current->pid == 1))
+		return ksu_sth_call_orig(__NR_faccessat, regs);
 
 	ksu_handle_faccessat(dfd, filename_user, mode, NULL);
 
@@ -206,6 +258,9 @@ static long ksu_sth_newfstatat(const struct pt_regs *regs)
 	const char __user **filename_user =
 		(const char __user **)&PT_REGS_PARM2(regs);
 	int *flags = (int *)&PT_REGS_SYSCALL_PARM4(regs);
+
+	if (unlikely(current->pid == 1))
+		return ksu_sth_call_orig(__NR_newfstatat, regs);
 
 	ksu_handle_stat(dfd, filename_user, flags);
 
@@ -231,14 +286,18 @@ void __init ksu_syscall_table_hook_init(void)
 #ifdef __NR_newfstatat
 		{ __NR_newfstatat, ksu_sth_newfstatat },
 #endif
+#ifdef __NR_setresuid
+		{ __NR_setresuid, ksu_sth_setresuid },
+#endif
+#ifdef __NR_reboot
+		{ __NR_reboot, ksu_sth_reboot },
+#endif
 	};
 	int i, patched = 0;
 
 	ksu_init_symbol_resolver();
 
-	ksu_sth_syscall_table =
-		(ksu_syscall_fn_t *)ksu_resolve_symbol_for_functable_hook(
-			"sys_call_table");
+	ksu_sth_syscall_table = ksu_sth_table;
 	pr_info("sth: sys_call_table=0x%lx\n",
 		(unsigned long)ksu_sth_syscall_table);
 

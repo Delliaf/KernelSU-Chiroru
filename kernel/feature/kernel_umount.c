@@ -45,8 +45,7 @@ static const struct ksu_feature_handler kernel_umount_handler = {
 	.set_handler = kernel_umount_feature_set,
 };
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0) ||                           \
-	defined(KSU_HAS_PATH_UMOUNT)
+#if 0 /* vendor: path_umount is not available */
 extern int path_umount(struct path *path, int flags);
 static void ksu_umount_mnt(const char *mnt, struct path *path, int flags)
 {
@@ -58,13 +57,14 @@ static void ksu_umount_mnt(const char *mnt, struct path *path, int flags)
 #else
 static void ksu_sys_umount(const char *mnt, int flags)
 {
+	return; /* vendor: no ksys_umount */
 	char __user *usermnt = (char __user *)mnt;
 	mm_segment_t old_fs;
 
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 17, 0)
-	ksys_umount(usermnt, flags);
+	/* vendor: ksys_umount unavailable */
 #else
 	sys_umount(usermnt, flags); // cuz asmlinkage long sys##name
 #endif

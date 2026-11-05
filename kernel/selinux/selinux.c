@@ -23,6 +23,22 @@ static u32 cached_su_sid __read_mostly = 0;
 static u32 cached_zygote_sid __read_mostly = 0;
 static u32 cached_init_sid __read_mostly = 0;
 u32 ksu_file_sid __read_mostly = 0;
+static u32 bootstrap_sid __read_mostly;
+
+/* Capture only the authenticated module loader's domain before its transition.
+ * This exception is for an already-root bootstrap child, never ordinary apps
+ * or UID-0 processes in unrelated restricted domains. */
+void ksu_capture_bootstrap_domain(void)
+{
+    if (current_uid().val == 0 && current_euid().val == 0)
+        bootstrap_sid = current_sid();
+}
+
+bool ksu_is_bootstrap_root(void)
+{
+    return bootstrap_sid != 0 && current_uid().val == 0 &&
+           current_euid().val == 0 && current_sid() == bootstrap_sid;
+}
 
 static int transive_to_domain(const char *domain, struct cred *cred, bool clear_exec_sid)
 {
@@ -76,12 +92,13 @@ is_ksu_transition(const struct task_security_struct *old_tsec,
 }
 #endif
 
-void setup_selinux(const char *domain, struct cred *cred)
+int setup_selinux(const char *domain, struct cred *cred)
 {
-    if (transive_to_domain(domain, cred, false)) {
+    int error = transive_to_domain(domain, cred, false);
+    if (error) {
         pr_err("transive domain failed.\n");
-        return;
     }
+    return error;
 }
 
 void setup_ksu_cred(void)

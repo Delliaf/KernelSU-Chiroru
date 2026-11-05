@@ -144,6 +144,7 @@ static const struct lsm_id ksu_lsmid = {
 
 void __init ksu_lsm_hook_init(void)
 {
+	return; /* vendor: syscall-table hook mode, no LSM hooks */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
 	security_add_hooks(ksu_hooks, ARRAY_SIZE(ksu_hooks), &ksu_lsmid);
 #elif LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
@@ -155,8 +156,58 @@ void __init ksu_lsm_hook_init(void)
 	pr_info("LSM hooks initialized.\n");
 }
 #else
+#include <linux/kprobes.h>
+#include <linux/task_work.h>
+#include <linux/slab.h>
+#include "arch.h"
+
+struct ksu_setuid_work {
+	struct callback_head cb;
+	uid_t old_uid;
+	uid_t new_uid;
+};
+
+static void ksu_setuid_work_fn(struct callback_head *cb)
+{
+	struct ksu_setuid_work *w = container_of(cb, struct ksu_setuid_work, cb);
+
+	/* Runs on the target task on its way back to userspace: process context. */
+	ksu_handle_setresuid(w->old_uid, w->new_uid);
+	kfree(w);
+}
+
+static int ksu_setuid_pre_handler(struct kprobe *p, struct pt_regs *regs)
+{
+	struct cred *new = (struct cred *)PT_REGS_PARM1(regs);
+	const struct cred *old = (const struct cred *)PT_REGS_PARM2(regs);
+	struct ksu_setuid_work *w;
+
+	if (!new || !old)
+		return 0;
+
+	/* This runs in atomic context: only queue, never allocate with GFP_KERNEL. */
+	w = kmalloc(sizeof(*w), GFP_ATOMIC);
+	if (!w)
+		return 0;
+
+	w->old_uid = old->uid.val;
+	w->new_uid = new->uid.val;
+	init_task_work(&w->cb, ksu_setuid_work_fn);
+
+	if (task_work_add(current, &w->cb, true))
+		kfree(w);
+
+	return 0;
+}
+
+static struct kprobe ksu_setuid_kp = {
+	.symbol_name = "security_task_fix_setuid",
+	.pre_handler = ksu_setuid_pre_handler,
+};
+
 void __init ksu_lsm_hook_init(void)
 {
-	return;
+	int ret = register_kprobe(&ksu_setuid_kp);
+	pr_info("setuid kprobe (deferred task_work): %d\n", ret);
 }
 #endif

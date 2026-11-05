@@ -141,6 +141,7 @@ static void ksu_mnt_ns_individual(void)
 
 void setup_mount_ns(int32_t ns_mode)
 {
+	return; /* vendor: mntns_operations unavailable */
     // inherit mode
     if (ns_mode == KSU_NS_INHERITED) {
         // do nothing

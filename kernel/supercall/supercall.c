@@ -112,7 +112,7 @@ static void ksu_install_fd_tw_func(struct callback_head *cb)
     int fd = ksu_install_fd();
 
     pr_info("[%d] install ksu fd: %d\n", current->pid, fd);
-    if (copy_to_user(tw->outp, &fd, sizeof(fd))) {
+    if (ksu_copy_to_user(tw->outp, &fd, sizeof(fd))) {
         pr_err("install ksu fd reply err\n");
         ksu_close_fd(fd);
     }
@@ -161,7 +161,7 @@ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,
 		ksu_set_manager_appid(cmd);
 
 		if (cmd == ksu_get_manager_appid()) {
-			if (copy_to_user((void __user *)*arg, &reply, sizeof(reply)))
+			if (ksu_copy_to_user((void __user *)*arg, &reply, sizeof(reply)))
 				pr_info("sys_reboot: reply fail\n");
 		}
 
@@ -177,7 +177,7 @@ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,
 		if (ret)
 			return 0;
 
-		if (copy_to_user((void __user *)*arg, &reply, sizeof(reply) ))
+		if (ksu_copy_to_user((void __user *)*arg, &reply, sizeof(reply) ))
 			return 0;
 	}
 
@@ -189,7 +189,7 @@ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,
 		pr_info("sys_reboot: ksu_change_ksuver to: %d\n", cmd);
 		ksuver_override = cmd;
 
-		if (copy_to_user((void __user *)*arg, &reply, sizeof(reply) ))
+		if (ksu_copy_to_user((void __user *)*arg, &reply, sizeof(reply) ))
 			return 0;
 	}
 
@@ -216,7 +216,7 @@ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,
 		pr_info("sys_reboot: ppptr: 0x%lx \n", ppptr);
 
 		// arg here is ***, dereference to pull out **
-		if (copy_from_user(&u_pptr, (void __user *)*ppptr, sizeof(u_pptr)))
+		if (ksu_copy_from_user(&u_pptr, (void __user *)*ppptr, sizeof(u_pptr)))
 			return 0;
 
 		pr_info("sys_reboot: u_pptr: 0x%lx \n", u_pptr);
@@ -224,7 +224,7 @@ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,
 		// now we got the __user **
 		// we cannot dereference this as this is __user
 		// we just do another copy_from_user to get it
-		if (copy_from_user(&u_ptr, (void __user *)u_pptr, sizeof(u_ptr)))
+		if (ksu_copy_from_user(&u_ptr, (void __user *)u_pptr, sizeof(u_ptr)))
 			return 0;
 
 		pr_info("sys_reboot: u_ptr: 0x%lx \n", u_ptr);
@@ -262,7 +262,7 @@ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,
 
 		struct new_utsname *u = utsname();
 
-		down_write(&uts_sem);
+		/* vendor: uts_sem unavailable */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 13, 0)
 		strscpy(u->release, release_buf, sizeof(u->release));
 		strscpy(u->version, version_buf, sizeof(u->version));
@@ -270,10 +270,10 @@ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,
 		strlcpy(u->release, release_buf, sizeof(u->release));
 		strlcpy(u->version, version_buf, sizeof(u->version));
 #endif
-		up_write(&uts_sem);
+		/* vendor: uts_sem unavailable */
 
 		// we write our confirmation on **
-		if (copy_to_user((void __user *)*arg, &reply, sizeof(reply)))
+		if (ksu_copy_to_user((void __user *)*arg, &reply, sizeof(reply)))
 			return 0;
 	}
 

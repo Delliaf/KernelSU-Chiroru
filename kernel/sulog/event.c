@@ -90,7 +90,7 @@ int ksu_sulog_handle_compat_dump(void __user *uptr)
     struct timespec64 ts;
     struct compat_sulog_entry *local_buf;
 
-    if (copy_from_user(&sbuf, uptr, sizeof(sbuf)))
+    if (ksu_copy_from_user(&sbuf, uptr, sizeof(sbuf)))
         return 1;
 
     if (!sbuf.index_ptr || !sbuf.buf_ptr || !sbuf.uptime_ptr)
@@ -102,7 +102,7 @@ int ksu_sulog_handle_compat_dump(void __user *uptr)
 	get_monotonic_boottime(&ts);
 #endif
     uptime = (uint32_t)ts.tv_sec;
-    if (copy_to_user((void __user *)(uintptr_t)sbuf.uptime_ptr, &uptime, sizeof(uptime)))
+    if (ksu_copy_to_user((void __user *)(uintptr_t)sbuf.uptime_ptr, &uptime, sizeof(uptime)))
         return 1;
 
     local_buf = kmalloc(sizeof(compat_sulog_buf), GFP_ATOMIC);
@@ -114,12 +114,12 @@ int ksu_sulog_handle_compat_dump(void __user *uptr)
     memcpy(local_buf, compat_sulog_buf, sizeof(compat_sulog_buf));
     spin_unlock(&compat_sulog_lock);
 
-    if (copy_to_user((void __user *)(uintptr_t)sbuf.index_ptr, &local_idx, sizeof(local_idx))) {
+    if (ksu_copy_to_user((void __user *)(uintptr_t)sbuf.index_ptr, &local_idx, sizeof(local_idx))) {
         kfree(local_buf);
         return 1;
     }
 
-    if (copy_to_user((void __user *)(uintptr_t)sbuf.buf_ptr, local_buf, sizeof(compat_sulog_buf))) {
+    if (ksu_copy_to_user((void __user *)(uintptr_t)sbuf.buf_ptr, local_buf, sizeof(compat_sulog_buf))) {
         kfree(local_buf);
         return 1;
     }

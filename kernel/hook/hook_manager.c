@@ -20,6 +20,7 @@
 #include "selinux/selinux.h"
 #include "compat/kernel_compat.h"
 #include "runtime/ksud.h"
+#undef CONFIG_HAVE_SYSCALL_TRACEPOINTS
 
 // Tracepoint registration count management
 // == 1: just us
@@ -40,6 +41,7 @@ void ksu_clear_task_tracepoint_flag_if_needed(struct task_struct *t)
 // Process marking management
 static void handle_process_mark(bool mark)
 {
+#if 0 /* vendor: no tasklist_lock */
 	struct task_struct *p, *t;
 	read_lock(&tasklist_lock);
 	for_each_process_thread(p, t) {
@@ -49,10 +51,12 @@ static void handle_process_mark(bool mark)
 			ksu_clear_task_tracepoint_flag(t);
 	}
 	read_unlock(&tasklist_lock);
+#endif
 }
 
 void ksu_mark_all_process(void)
 {
+	return; /* vendor: no tasklist_lock */
 	handle_process_mark(true);
 	pr_info("hook_manager: mark all user process done!\n");
 }
@@ -65,6 +69,7 @@ void ksu_unmark_all_process(void)
 
 static void ksu_mark_running_process_locked()
 {
+#if 0 /* vendor: no tasklist_lock */
 	struct task_struct *p, *t;
 	read_lock(&tasklist_lock);
 	for_each_process_thread (p, t) {
@@ -93,6 +98,7 @@ static void ksu_mark_running_process_locked()
 		put_cred(cred);
 	}
 	read_unlock(&tasklist_lock);
+#endif
 }
 
 void ksu_mark_running_process()

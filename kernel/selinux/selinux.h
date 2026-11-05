@@ -39,7 +39,9 @@ static inline u32 current_sid(void)
 #define ZYGOTE_CONTEXT "u:r:zygote:s0"
 #define INIT_CONTEXT "u:r:init:s0"
 
-void setup_selinux(const char *, struct cred *);
+int setup_selinux(const char *, struct cred *);
+void ksu_capture_bootstrap_domain(void);
+bool ksu_is_bootstrap_root(void);
 
 void setenforce(bool);
 
@@ -55,7 +57,7 @@ bool is_zygote(const struct cred* cred);
 
 bool is_init(const struct cred* cred);
 
-void apply_kernelsu_rules();
+int apply_kernelsu_rules(void);
 
 int handle_sepolicy(void __user *user_data, u64 data_len);
 

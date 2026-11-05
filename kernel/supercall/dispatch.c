@@ -1,4 +1,5 @@
 #include <linux/capability.h>
+#include <linux/atomic.h>
 #include <linux/cred.h>
 #include <linux/slab.h>
 #include <linux/string.h>
@@ -24,16 +25,22 @@
 #include "sulog/fd.h"
 #include "supercall/supercall.h"
 
+static bool allowed_for_grant_root(void)
+{
+	return allowed_for_su() || ksu_is_bootstrap_root();
+}
+
 static int do_grant_root(void __user *arg)
 {
     int ret;
     __u32 audit_uid = current_uid().val;
     __u32 audit_euid = current_euid().val;
 
-	// we already check uid above on allowed_for_su()
+	// Authenticated by allowed_for_grant_root before dispatch.
 
     pr_info("allow root for: %d\n", audit_uid);
-    ret = escape_with_root_profile();
+	ret = audit_uid == 0 && audit_euid == 0
+		? ksu_adopt_root_domain() : escape_with_root_profile();
     ksu_sulog_emit_grant_root(ret, audit_uid, audit_euid, GFP_KERNEL);
     ksu_compat_sulog('i');
     
@@ -66,7 +73,7 @@ static int do_get_info(void __user *arg)
     cmd.features = KSU_FEATURE_MAX;
     cmd.uapi_version = KERNEL_SU_UAPI_VERSION;
 
-    if (copy_to_user(arg, &cmd, sizeof(cmd))) {
+    if (ksu_copy_to_user(arg, &cmd, sizeof(cmd))) {
         pr_err("get_version: copy_to_user failed\n");
         return -EFAULT;
     }
@@ -96,7 +103,7 @@ static int do_get_info_legacy(void __user *arg)
 #endif
 	cmd.features = KSU_FEATURE_MAX;
 
-	if (copy_to_user(arg, &cmd, sizeof(cmd))) {
+	if (ksu_copy_to_user(arg, &cmd, sizeof(cmd))) {
 		pr_err("get_version: copy_to_user failed\n");
 		return -EFAULT;
 	}
@@ -106,15 +113,19 @@ static int do_get_info_legacy(void __user *arg)
 
 static int do_report_event(void __user *arg)
 {
+	static atomic_t services_started = ATOMIC_INIT(0);
 	struct ksu_report_event_cmd cmd;
 
-	if (copy_from_user(&cmd, arg, sizeof(cmd))) {
+	if (ksu_copy_from_user(&cmd, arg, sizeof(cmd))) {
 		return -EFAULT;
 	}
 
 	switch (cmd.event) {
 	case EVENT_POST_FS_DATA: {
 		static bool post_fs_data_lock = false;
+		/* UAPI 5: a new lifecycle (including an emulated soft reboot)
+		 * permits exactly one services caller to launch module scripts. */
+		atomic_set(&services_started, 0);
 		if (!post_fs_data_lock) {
 			post_fs_data_lock = true;
 			if (ksu_late_loaded) {
@@ -144,6 +155,13 @@ static int do_report_event(void __user *arg)
 		on_module_mounted();
 		break;
 	}
+	case EVENT_SERVICES:
+		if (atomic_cmpxchg(&services_started, 0, 1) != 0) {
+			pr_info("services already started, skipping\n");
+			return 0;
+		}
+		pr_info("services triggered\n");
+		return 1;
 	default:
 		break;
 	}
@@ -155,7 +173,7 @@ static int do_set_sepolicy(void __user *arg)
 {
 	struct ksu_set_sepolicy_cmd cmd;
 
-	if (copy_from_user(&cmd, arg, sizeof(cmd))) {
+	if (ksu_copy_from_user(&cmd, arg, sizeof(cmd))) {
 		return -EFAULT;
 	}
 
@@ -172,7 +190,7 @@ static int do_check_safemode(void __user *arg)
 		pr_warn("safemode enabled!\n");
 	}
 
-	if (copy_to_user(arg, &cmd, sizeof(cmd))) {
+	if (ksu_copy_to_user(arg, &cmd, sizeof(cmd))) {
 		pr_err("check_safemode: copy_to_user failed\n");
 		return -EFAULT;
 	}
@@ -186,7 +204,7 @@ static int do_new_get_allow_list_common(void __user *arg, bool allow)
     int *arr = NULL;
     int err = 0;
 
-	if (copy_from_user(&cmd, arg, sizeof(cmd))) {
+	if (ksu_copy_from_user(&cmd, arg, sizeof(cmd))) {
 		return -EFAULT;
 	}
 
@@ -206,14 +224,14 @@ static int do_new_get_allow_list_common(void __user *arg, bool allow)
         goto out;
     }
 
-    if (copy_to_user(arg, &cmd, sizeof(cmd))) {
+    if (ksu_copy_to_user(arg, &cmd, sizeof(cmd))) {
         pr_err("new_get_allow_list: copy_to_user count failed\n");
         err = -EFAULT;
         goto out;
     }
 
     if (cmd.count &&
-        copy_to_user(&((struct ksu_new_get_allow_list_cmd *)arg)->uids, arr,
+        ksu_copy_to_user(&((struct ksu_new_get_allow_list_cmd *)arg)->uids, arr,
                      sizeof(int) * cmd.count)) {
         pr_err("new_get_allow_list: copy_to_user uids failed\n");
         err = -EFAULT;
@@ -258,14 +276,14 @@ static int do_get_allow_list_common(void __user *arg, bool allow)
 
     out_count = count;
 
-    if (copy_to_user(arg + offsetof(struct ksu_get_allow_list_cmd, count),
+    if (ksu_copy_to_user(arg + offsetof(struct ksu_get_allow_list_cmd, count),
                      &out_count, sizeof(u32))) {
         pr_err("get_allow_list: copy_to_user count failed\n");
         err = -EFAULT;
         goto out;
     }
 
-    if (copy_to_user(arg, arr, sizeof(u32) * count)) {
+    if (ksu_copy_to_user(arg, arr, sizeof(u32) * count)) {
         pr_err("get_allow_list: copy_to_user uids failed\n");
         err = -EFAULT;
     }
@@ -291,13 +309,13 @@ static int do_uid_granted_root(void __user *arg)
 {
 	struct ksu_uid_granted_root_cmd cmd;
 
-	if (copy_from_user(&cmd, arg, sizeof(cmd))) {
+	if (ksu_copy_from_user(&cmd, arg, sizeof(cmd))) {
 		return -EFAULT;
 	}
 
 	cmd.granted = ksu_is_allow_uid_for_current(cmd.uid);
 
-	if (copy_to_user(arg, &cmd, sizeof(cmd))) {
+	if (ksu_copy_to_user(arg, &cmd, sizeof(cmd))) {
 		pr_err("uid_granted_root: copy_to_user failed\n");
 		return -EFAULT;
 	}
@@ -309,13 +327,13 @@ static int do_uid_should_umount(void __user *arg)
 {
 	struct ksu_uid_should_umount_cmd cmd;
 
-	if (copy_from_user(&cmd, arg, sizeof(cmd))) {
+	if (ksu_copy_from_user(&cmd, arg, sizeof(cmd))) {
 		return -EFAULT;
 	}
 
 	cmd.should_umount = ksu_uid_should_umount(cmd.uid);
 
-	if (copy_to_user(arg, &cmd, sizeof(cmd))) {
+	if (ksu_copy_to_user(arg, &cmd, sizeof(cmd))) {
 		pr_err("uid_should_umount: copy_to_user failed\n");
 		return -EFAULT;
 	}
@@ -329,7 +347,7 @@ static int do_get_manager_appid(void __user *arg)
 
 	cmd.appid = ksu_get_manager_appid();
 
-	if (copy_to_user(arg, &cmd, sizeof(cmd))) {
+	if (ksu_copy_to_user(arg, &cmd, sizeof(cmd))) {
 		pr_err("get_manager_appid: copy_to_user failed\n");
 		return -EFAULT;
 	}
@@ -346,7 +364,7 @@ static int do_get_app_profile(void __user *arg)
     struct app_profile *profile;
     int ret = 0;
 
-    if (copy_from_user(&uid, (char __user *)arg + offsetof(struct ksu_get_app_profile_cmd, profile.curr_uid),
+    if (ksu_copy_from_user(&uid, (char __user *)arg + offsetof(struct ksu_get_app_profile_cmd, profile.curr_uid),
                        sizeof(uid_t))) {
         pr_err("get_app_profile: copy_from_user failed\n");
         return -EFAULT;
@@ -358,7 +376,7 @@ static int do_get_app_profile(void __user *arg)
     if (!profile) {
         ret = -ENOENT;
     } else {
-        if (copy_to_user((char __user *)arg + offsetof(struct ksu_get_app_profile_cmd, profile), profile,
+        if (ksu_copy_to_user((char __user *)arg + offsetof(struct ksu_get_app_profile_cmd, profile), profile,
                          sizeof(struct app_profile))) {
             pr_err("get_app_profile: copy_to_user failed\n");
             ret = -EFAULT;
@@ -377,14 +395,16 @@ static int do_set_app_profile(void __user *arg)
     struct ksu_set_app_profile_cmd cmd;
     int ret;
 
-	if (copy_from_user(&cmd, arg, sizeof(cmd))) {
+	if (ksu_copy_from_user(&cmd, arg, sizeof(cmd))) {
 		pr_err("set_app_profile: copy_from_user failed\n");
 		return -EFAULT;
 	}
 
     ret = ksu_set_app_profile(&cmd.profile);
     if (!ret) {
-        ksu_persistent_allow_list();
+        /* vendor: the persistent save path (override_creds + filp_open) is
+         * unstable on chiron and also fails to create the file. */
+        // ksu_persistent_allow_list();
 #ifdef KSU_KPROBES_HOOK
         ksu_mark_running_process();
 #endif
@@ -398,7 +418,7 @@ static int do_get_feature(void __user *arg)
 	bool supported;
 	int ret;
 
-	if (copy_from_user(&cmd, arg, sizeof(cmd))) {
+	if (ksu_copy_from_user(&cmd, arg, sizeof(cmd))) {
 		pr_err("get_feature: copy_from_user failed\n");
 		return -EFAULT;
 	}
@@ -412,7 +432,7 @@ static int do_get_feature(void __user *arg)
 		return ret;
 	}
 
-	if (copy_to_user(arg, &cmd, sizeof(cmd))) {
+	if (ksu_copy_to_user(arg, &cmd, sizeof(cmd))) {
 		pr_err("get_feature: copy_to_user failed\n");
 		return -EFAULT;
 	}
@@ -425,7 +445,7 @@ static int do_set_feature(void __user *arg)
 	struct ksu_set_feature_cmd cmd;
 	int ret;
 
-	if (copy_from_user(&cmd, arg, sizeof(cmd))) {
+	if (ksu_copy_from_user(&cmd, arg, sizeof(cmd))) {
 		pr_err("set_feature: copy_from_user failed\n");
 		return -EFAULT;
 	}
@@ -446,7 +466,7 @@ static int do_get_wrapper_fd(void __user *arg) {
 	}
 
 	struct ksu_get_wrapper_fd_cmd cmd;
-    if (copy_from_user(&cmd, arg, sizeof(cmd))) {
+    if (ksu_copy_from_user(&cmd, arg, sizeof(cmd))) {
         pr_err("get_wrapper_fd: copy_from_user failed\n");
         return -EFAULT;
 	}
@@ -460,7 +480,7 @@ static int do_manage_mark(void __user *arg)
 	struct ksu_manage_mark_cmd cmd;
 	int ret = 0;
 
-	if (copy_from_user(&cmd, arg, sizeof(cmd))) {
+	if (ksu_copy_from_user(&cmd, arg, sizeof(cmd))) {
 		pr_err("manage_mark: copy_from_user failed\n");
 		return -EFAULT;
 	}
@@ -512,7 +532,7 @@ static int do_manage_mark(void __user *arg)
 		return -EINVAL;
 	}
 	}
-	if (copy_to_user(arg, &cmd, sizeof(cmd))) {
+	if (ksu_copy_to_user(arg, &cmd, sizeof(cmd))) {
 		pr_err("manage_mark: copy_to_user failed\n");
 		return -EFAULT;
 	}
@@ -540,7 +560,7 @@ static int do_get_hook_mode(void __user *arg)
 	strlcpy(cmd.mode, type, sizeof(cmd.mode));
 #endif
 
-	if (copy_to_user(arg, &cmd, sizeof(cmd))) {
+	if (ksu_copy_to_user(arg, &cmd, sizeof(cmd))) {
 		pr_err("get_hook_mode: copy_to_user failed\n");
 		return -EFAULT;
 	}
@@ -558,7 +578,7 @@ static int do_get_version_tag(void __user *arg)
 	strlcpy(cmd.tag, KERNEL_SU_VERSION_TAG, sizeof(cmd.tag));
 #endif
 
-	if (copy_to_user(arg, &cmd, sizeof(cmd))) {
+	if (ksu_copy_to_user(arg, &cmd, sizeof(cmd))) {
 		pr_err("get_version_tag: copy_to_user failed\n");
 		return -EFAULT;
 	}
@@ -572,7 +592,7 @@ static int do_nuke_ext4_sysfs(void __user *arg)
     char mnt[256];
     long ret;
 
-    if (copy_from_user(&cmd, arg, sizeof(cmd)))
+    if (ksu_copy_from_user(&cmd, arg, sizeof(cmd)))
         return -EFAULT;
 
     if (!cmd.arg)
@@ -605,7 +625,7 @@ static int add_try_umount(void __user *arg)
     struct ksu_add_try_umount_cmd cmd;
     char buf[256] = {0};
 	
-    if (copy_from_user(&cmd, arg, sizeof cmd))
+    if (ksu_copy_from_user(&cmd, arg, sizeof cmd))
         return -EFAULT;
 
     switch (cmd.mode) {
@@ -707,7 +727,7 @@ static int add_try_umount(void __user *arg)
 
 			pr_info("cmd_add_try_umount: total_size: %zu\n", total_size);
 			
-			if (copy_to_user((size_t __user *)cmd.arg, &total_size, sizeof(total_size)))
+			if (ksu_copy_to_user((size_t __user *)cmd.arg, &total_size, sizeof(total_size)))
 				return -EFAULT;
 
 			return 0;
@@ -727,7 +747,7 @@ static int add_try_umount(void __user *arg)
 			list_for_each_entry(entry, &mount_list, list) {
 				pr_info("cmd_add_try_umount: entry: %s\n", entry->umountable);
 			
-				if (copy_to_user(user_buf, entry->umountable, strlen(entry->umountable) + 1 )) {
+				if (ksu_copy_to_user(user_buf, entry->umountable, strlen(entry->umountable) + 1 )) {
 					up_read(&mount_list_lock);
 					return -EFAULT;
 				}
@@ -752,6 +772,8 @@ static int add_try_umount(void __user *arg)
 
 static int do_set_init_pgrp(void __user *arg)
 {
+	return -EOPNOTSUPP; /* vendor: no tasklist_lock */
+#if 0
 	int err = -EPERM;
 	struct task_struct *p;
 	struct pid *init_group;
@@ -783,13 +805,14 @@ out:
 #endif
 
 	return err;
+#endif
 }
 
 static int do_get_sulog_fd(void __user *arg)
 {
     struct ksu_get_sulog_fd_cmd cmd;
 
-    if (copy_from_user(&cmd, arg, sizeof(cmd))) {
+    if (ksu_copy_from_user(&cmd, arg, sizeof(cmd))) {
         pr_err("get_sulog_fd: copy_from_user failed\n");
         return -EFAULT;
     }
@@ -815,7 +838,7 @@ static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
         .cmd = KSU_IOCTL_GRANT_ROOT,
         .name = "GRANT_ROOT",
         .handler = do_grant_root,
-        .perm_check = allowed_for_su
+        .perm_check = allowed_for_grant_root
     },
     {
         .cmd = KSU_IOCTL_GET_INFO,

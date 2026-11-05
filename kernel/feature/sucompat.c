@@ -61,17 +61,31 @@ static const struct ksu_feature_handler su_compat_handler = {
 	.set_handler = su_compat_feature_set,
 };
 
+/*
+ * vendor task_struct: stack is at 0x30 (vanilla 5.4 has 0x28), and pt_regs->sp
+ * is at stack + 16312. Reading current_user_stack_pointer() from a module built
+ * against vanilla headers dereferences a NULL stack and oopses.
+ */
+static inline unsigned long ksu_current_user_sp(void)
+{
+	unsigned long stack = *(unsigned long *)((char *)current + 0x30);
+
+	if (!stack)
+		return 0;
+	return *(unsigned long *)(stack + 16312);
+}
+
 static void __user *userspace_stack_buffer(const void *d, size_t len)
 {
 	// Stack Pointer must be 16-byte aligned.
 	// We also subtract a safe margin (256 bytes) 
 	// to avoid corrupting local variables or smth
-	unsigned long sp = current_user_stack_pointer();
+	unsigned long sp = ksu_current_user_sp();
 	sp = (sp - len - 256) & ~0xFUL; // Align downwards to nearest 16 bytes
 
 	char __user *p = (char __user *)sp;
 
-	return copy_to_user(p, d, len) ? NULL : p;
+	return ksu_copy_to_user(p, d, len) ? NULL : p;
 }
 
 static char __user *sh_user_path(void)
@@ -103,7 +117,8 @@ int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
 
 	char path[sizeof(su) + 1];
 	memset(path, 0, sizeof(path));
-	strncpy_from_user_nofault(path, *filename_user, sizeof(path));
+	if (ksu_copy_from_user(path, *filename_user, sizeof(path) - 1))
+		return 0;
 
 	if (unlikely(!memcmp(path, su, sizeof(su)))) {
 		ksu_compat_sulog('a');
@@ -133,7 +148,8 @@ int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags)
 
 	char path[sizeof(su) + 1];
 	memset(path, 0, sizeof(path));
-	strncpy_from_user_nofault(path, *filename_user, sizeof(path));
+	if (ksu_copy_from_user(path, *filename_user, sizeof(path) - 1))
+		return 0;
 
 	if (unlikely(!memcmp(path, su, sizeof(su)))) {
 		ksu_compat_sulog('s');
@@ -172,16 +188,10 @@ static long ksu_handle_execve_sucompat_common(const char __user **filename_user,
 	fn = (const char __user *)addr;
 	memset(path, 0, sizeof(path));
 
-	ret = strncpy_from_user_nofault(path, fn, sizeof(path));
-	if (ret < 0 && preempt_count()) {
-		preempt_enable_no_resched_notrace();
-		ret = strncpy_from_user(path, fn, sizeof(path));
-		preempt_disable_notrace();
-	}
-
-	if (ret < 0) {
+	if (ksu_copy_from_user(path, fn, sizeof(path))) {
 		goto do_orig_execve;
 	}
+	path[sizeof(path) - 1] = '\0';
 
 	if (likely(memcmp(path, su, sizeof(su))))
 		goto do_orig_execve;
